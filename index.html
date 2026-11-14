@@ -49,48 +49,46 @@ small{font-size:.6em}
 </style></head><body>
 <div id="ui"></div><div id="inv"></div><div id="atk"></div><div id="sup">СУПЕР</div><div id="quit" onclick="leave()">✕</div><canvas id="ov"></canvas><div id="rot">↻<br>Поверни телефон горизонтально</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
-/* Мультиплеер без Claude: прямое соединение игроков (WebRTC/PeerJS), лобби по 4-значному коду. Хост = звезда. */
+/* Мультиплеер без Claude: сообщения идут через Firebase Realtime Database, лобби по 4-значному коду. */
 (function(){
-const ID='u'+Math.random().toString(36).slice(2,10),PFX='kbrawl-';
-const PC={config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]}};
-const retry=async(f,n)=>{for(let i=1;;i++){try{return await f()}catch(e){if(i>=n||!(e&&/^net_/.test(e.code)))throw e;await new Promise(r=>setTimeout(r,1500))}}};
-const mkRoom=(code,host)=>new Promise((res,rej)=>{
- if(typeof Peer==='undefined'){const e=new Error('no_peerjs');e.code='no_peerjs';return rej(e)}
- const hid=PFX+code,peer=host?new Peer(hid,PC):new Peer('kc'+Math.random().toString(36).slice(2,10),PC),H={},conns={},last={};
- let list={},me=host?hid:null,pcb=null,pr=null,hc=null,done=0,gone=0;
- const fail=c=>{if(done)return;done=1;clearTimeout(to);try{peer.destroy()}catch(x){}const e=new Error(c);e.code=c;rej(e)};
- const to=setTimeout(()=>fail('timeout'),25000);
- const snap=()=>Object.keys(list).map(id=>({peer:id,presence:list[id],isMe:id==me,sameTab:id==me,kind:'viewer'}));
- const fire=left=>{if(pcb)pcb({peers:snap(),left:left||[]})};
- const bc=left=>{const m={t:'L',l:list};for(const id in conns)if(conns[id].open)conns[id].send(m);fire(left)};
- const deliver=(e,d,f)=>{if(H[e])H[e]({data:d,peer:f,isMe:f==me})};
- const room={
-  presence(p){pr=p;if(host){list[hid]=p;last[hid]=p;bc()}else if(hc&&hc.open)hc.send({t:'p',p});return Promise.resolve()},
-  onPeers(cb){pcb=cb;setTimeout(()=>fire(),0)},
-  on(e,cb){H[e]=cb},
-  peers(){return snap()},
-  emit(e,d){try{if(host){for(const id in conns)if(conns[id].open)conns[id].send({t:'e',e,d,f:hid})}else if(hc&&hc.open)hc.send({t:'e',e,d})}catch(x){}return Promise.resolve()},
-  leave(){gone=1;try{peer.destroy()}catch(x){}return Promise.resolve()}
- };
- peer.on('error',er=>fail(er.type=='unavailable-id'?'code_taken':er.type=='peer-unavailable'?'no_lobby':'net_'+er.type));
- if(host){
-  peer.on('open',()=>{done=1;clearTimeout(to);res(room)});
-  peer.on('connection',c=>{
-   const drop=()=>{if(!conns[c.peer])return;const p=last[c.peer];delete conns[c.peer];delete list[c.peer];bc([{peer:c.peer,presence:p}])};
-   c.on('open',()=>{conns[c.peer]=c;list[c.peer]=null});
-   c.on('data',m=>{if(!m)return;if(m.t=='p'){list[c.peer]=m.p;last[c.peer]=m.p;bc()}else if(m.t=='e')deliver(m.e,m.d,c.peer)});
-   c.on('close',drop);c.on('error',drop)});
- }else{
-  peer.on('open',id=>{me=id;hc=peer.connect(hid,{serialization:'json',reliable:true});hc.on('error',()=>fail('conn'));
-   hc.on('open',()=>{done=1;clearTimeout(to);if(pr)hc.send({t:'p',p:pr});res(room)});
-   hc.on('data',m=>{if(!m)return;if(m.t=='L'){const L=m.l||{},left=Object.keys(list).filter(k=>!(k in L)).map(k=>({peer:k,presence:last[k]}));for(const k in L)if(L[k])last[k]=L[k];list=L;fire(left)}else if(m.t=='e')deliver(m.e,m.d,m.f)});
-   hc.on('close',()=>{if(gone)return;const left=Object.keys(list).map(k=>({peer:k,presence:last[k]}));list={};fire(left)})});
- }
+const CFG={apiKey:"AIzaSyDSMCEhT_7Ge5QkzpXmV8Oq9bt1iihT67M",authDomain:"kistik-brawl.firebaseapp.com",databaseURL:"https://kistik-brawl-default-rtdb.firebaseio.com",projectId:"kistik-brawl",storageBucket:"kistik-brawl.firebasestorage.app",messagingSenderId:"738647732956",appId:"1:738647732956:web:e7c58df435a69e9e317a19"};
+const UID='u'+Math.random().toString(36).slice(2,10);let db=null;
+const err=c=>{const e=new Error(c);e.code=c;return e};
+const mkRoom=(code,host)=>new Promise(async(res,rej)=>{
+ let done=0;const to=setTimeout(()=>{if(!done){done=1;rej(err('timeout'))}},20000);
+ try{
+  if(typeof firebase==='undefined')throw err('no_firebase');
+  if(!db){firebase.initializeApp(CFG);db=firebase.database()}
+  const base=db.ref('kb/'+code),me='u'+Math.random().toString(36).slice(2,10),H={},seen={},last={};
+  let list={},pcb=null,cnt=0,gone=0;
+  const hs=await base.child('host').get();
+  if(host&&hs.exists())throw err('code_taken');
+  if(!host&&!hs.exists())throw err('no_lobby');
+  if(host){await base.child('host').set(me);base.onDisconnect().remove()}
+  else{base.child('p/'+me).onDisconnect().remove();base.child('m/'+me).onDisconnect().remove()}
+  const ms=await base.child('m').get();ms.forEach(x=>{const v=x.val()||{};for(const e in v)seen[x.key+'/'+e]=v[e]&&v[e].n});
+  const snap=()=>Object.keys(list).map(id=>({peer:id,presence:list[id],isMe:id==me,sameTab:id==me,kind:'viewer'}));
+  const fire=left=>{if(pcb)pcb({peers:snap(),left:left||[]})};
+  base.child('p').on('value',x=>{const v=x.val()||{},L={};for(const k in v){try{L[k]=JSON.parse(v[k])}catch(z){L[k]=null}}
+   const left=Object.keys(list).filter(k=>!(k in L)).map(k=>({peer:k,presence:last[k]}));for(const k in L)if(L[k])last[k]=L[k];list=L;fire(left)});
+  const onm=x=>{const from=x.key;if(from==me)return;const v=x.val()||{};for(const e in v){const m=v[e];if(!m||!m.n)continue;const k=from+'/'+e;if(seen[k]===m.n)continue;seen[k]=m.n;let d=null;try{d=JSON.parse(m.d)}catch(z){}if(H[e])H[e]({data:d,peer:from,isMe:false})}};
+  base.child('m').on('child_added',onm);base.child('m').on('child_changed',onm);
+  const room={
+   presence(p){if(gone)return Promise.resolve();return base.child('p/'+me).set(JSON.stringify(p)).catch(()=>{})},
+   onPeers(cb){pcb=cb;setTimeout(()=>fire(),0)},
+   on(e,cb){H[e]=cb},
+   peers(){return snap()},
+   emit(e,d){if(gone)return Promise.resolve();return base.child('m/'+me+'/'+e).set({d:JSON.stringify(d===undefined?null:d),n:++cnt}).catch(()=>{})},
+   leave(){gone=1;try{base.child('p').off();base.child('m').off()}catch(z){}if(host)base.remove();else{base.child('p/'+me).remove();base.child('m/'+me).remove()}return Promise.resolve()}
+  };
+  done=1;clearTimeout(to);res(room);
+ }catch(e){clearTimeout(to);if(!done){done=1;rej(e&&e.code?e:err('net_'+((e&&(e.code||e.message))||'fb')))}}
 });
-const stub={presence:()=>Promise.resolve(),onPeers(){},on(){},emit:()=>Promise.resolve(),peers:()=>[],join:(n,h)=>retry(()=>mkRoom(String(n).slice(2),!!h),3)};
-window.claude={use:async k=>k=='user'?{id:async()=>ID}:stub};
+const stub={presence:()=>Promise.resolve(),onPeers(){},on(){},emit:()=>Promise.resolve(),peers:()=>[],join:(n,h)=>mkRoom(String(n).slice(2),!!h)};
+window.claude={use:async k=>k=='user'?{id:async()=>UID}:stub};
 })();
 </script>
 <script>
